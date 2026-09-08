@@ -28,34 +28,42 @@ void loadLayout(ReactorState<>& reactor, const std::vector<std::string>& layout)
 }
 
 int main() {
-    // Visually define a 5x5 test layout.
-    // Example: A core of quad rods surrounded by vents and pipes.
+    // Define layout.
     std::vector<std::string> test_layout = {
         "R2A12",
-        "2A22A",
-        "A21A2",
+        "2AP2A",
+        "AP4A2",
         "12A21",
         "2A21A"
     };
+    // std::vector<std::string> test_layout = {
+    //     "R2A12",
+    //     "2A22A",
+    //     "A21A2",
+    //     "12A21",
+    //     "2A21A"
+    // };
 
-    int width = test_layout[0].size();
-    int height = test_layout.size();
+    size_t width = test_layout[0].size();
+    size_t height = test_layout.size();
 
-    // Instantiate our zero-allocation reactor simulation
+    // Instantiate reactor simulation.
     ReactorState<> reactor(width, height);
     
-    // Load the visual representation into the grid
+    // Load the visual representation into the grid.
     loadLayout(reactor, test_layout);
 
-    // Run the simulation loop
+    // Run the simulation loop.
     std::cout << "Simulating layout to equilibrium..." << std::endl;
     auto result = reactor.simulate_to_equilibrium();
 
-    // Output the results for verification
+    // Output the results for verification.
     std::cout << "\n--- Simulation Results ---" << std::endl;
     std::cout << "Total RF/t: " << result.rf_per_tick << std::endl;
     std::cout << "Max Temp:   " << result.max_temp << " C" << std::endl;
     std::cout << "Meltdown:   " << (result.melted_down ? "YES (>4000 C)" : "NO") << std::endl; //[cite: 1]
+    std::cout << "Stabilized: " << (result.stabilized ? "YES" : "NO") << std::endl;
+    std::cout << "Ticks Ran:  " << result.ticks_ran << std::endl;
 
     return 0;
 }

@@ -88,6 +88,8 @@ public:
         long long rf_per_tick;
         int max_temp;
         bool melted_down;
+        bool stabilized;
+        int ticks_ran;
     };
 
     SimResult simulate_to_equilibrium() {
@@ -140,14 +142,21 @@ public:
             }
         }
 
+        // Track state history to help identify a stable state.
+        constexpr int HISTORY_SIZE = 32;
+        struct StateSnapshot {
+            long long total_heat = -1;
+            int max_temp = -1;
+        };
+        std::array<StateSnapshot, HISTORY_SIZE> history;
+        int history_idx = 0;
+
         // Run tick sim for heat.
         bool stabilized = false;
         int max_temp = 0;
         int ticks = 0;
-        long long prev_total_heat = -1;
 
         while (!stabilized && ticks < 1000) {
-            bool heat_changed = false;
             max_temp = 0;
 
             // Add heat.
@@ -163,7 +172,7 @@ public:
                     BlockType curr_block = get_block(x, y);
                     
                     switch (curr_block) {
-                        case BlockType::HeatPipe:
+                        case BlockType::HeatPipe: {
                             int curr_heat = heat_map[y][x];
 
                             for (const auto& dir : directions) {
@@ -186,23 +195,25 @@ public:
                             }
                             heat_map[y][x] = curr_heat;
                             break;
-                        case BlockType::Absorber:
+                        }
+                        case BlockType::Absorber: {
                             for (const auto& dir : directions) {
                                 int nx = x + dir.first;
                                 int ny = y + dir.second;
                                 if (is_valid_coordinate(nx, ny) && get_block(nx, ny) != BlockType::Empty) {
-                                    int neighbor_heat = heat_map[y][x];
+                                    int neighbor_heat = heat_map[ny][nx];
 
                                     if (neighbor_heat <= 0) {
                                         continue;
                                     }
 
                                     // Allows for negative temperatures.
-                                    heat_map[y][x] -= config.absorber_cooling;
+                                    heat_map[ny][nx] -= config.absorber_cooling;
                                 }
                             }
                             break;
-                        case BlockType::HeatVent:
+                        }
+                        case BlockType::HeatVent: {
                             int max_neighbor_heat = 0;
                             int hx = -1;
                             int hy = -1;
@@ -211,7 +222,7 @@ public:
                                 int nx = x + dir.first;
                                 int ny = y + dir.second;
                                 if (is_valid_coordinate(nx, ny) && get_block(nx, ny) != BlockType::Empty) {
-                                    int neighbor_heat = heat_map[y][x];
+                                    int neighbor_heat = heat_map[ny][nx];
                                     
                                     if (neighbor_heat <= max_neighbor_heat) {
                                         continue;
@@ -228,6 +239,7 @@ public:
                                 }
                             }
                             break;
+                        }
                         default:
                             // In case of an air block.
                             break;
@@ -251,19 +263,25 @@ public:
             }
 
             if (curr_max_temp > config.meltdown_temp) {
-                return {rf_per_tick, curr_max_temp, true};
+                return {rf_per_tick, curr_max_temp, true, stabilized, ticks};
             }
 
-            // Check for stable state of reactor.
-            if (curr_total_heat == prev_total_heat && curr_max_temp == max_temp) {
-                stabilized = true;
+            // Cycle detection for a stable state.
+            for (int i = 0; i < HISTORY_SIZE; i++) {
+                if (history[i].total_heat == curr_total_heat && history[i].max_temp == curr_max_temp) {
+                    stabilized = true;
+                    break;
+                }
             }
 
-            prev_total_heat = curr_total_heat;
+            // Record current state to history buffer.
+            history[history_idx] = {curr_total_heat, curr_max_temp};
+            history_idx = (history_idx + 1) % HISTORY_SIZE;
+            
             max_temp = curr_max_temp;
             ticks++;
         }
 
-        return {rf_per_tick, max_temp, false};
+        return {rf_per_tick, max_temp, false, stabilized, ticks};
     }
 };
