@@ -6,6 +6,8 @@
 #include <cmath>
 #include <chrono>
 #include <future>
+#include <fstream>
+#include <map>
 
 // Neat printing.
 #define RESET   "\033[0m"
@@ -56,7 +58,7 @@ ReactorState<> optimize_layout(int width, int height, int seed, bool show_progre
 
     // Evaluate baseline.
     auto initial_result = current_reactor.simulate_to_equilibrium();
-    // Multiply by 1000 to ensure even minor meltdowns score worse than an empty 0 RF/t grid
+    // Multiply by 1000 to ensure even minor meltdowns score worse than an empty 0 RF/t grid.
     long long current_score = initial_result.melted_down ? -static_cast<long long>(initial_result.max_temp) * 1000 : initial_result.rf_per_tick;
     long long best_score = current_score;
     best_reactor = current_reactor;
@@ -64,9 +66,9 @@ ReactorState<> optimize_layout(int width, int height, int seed, bool show_progre
     // Hyperparameters.
     double start_temp = 100000.0;
     double end_temp = 0.1;
-    int max_iterations = 2500000; // Bumped up to 2.5 million!
+    int max_iterations = 2500000;
 
-    // Calculates the exact multiplier to reach end_temp at max_iterations
+    // Calculates the exact multiplier to reach end_temp at max_iterations.
     double cooling_rate = std::pow(end_temp / start_temp, 1.0 / max_iterations);
     double temperature = start_temp;
 
@@ -85,22 +87,22 @@ ReactorState<> optimize_layout(int width, int height, int seed, bool show_progre
 
         if (old_block == new_block) continue; // Skip redundant checks.
 
-        // Apply mutation IN-PLACE.
+        // Apply mutation in-place.
         current_reactor.set_block(mx, my, new_block);
 
-        // Score the mutated layout
+        // Score the mutated layout.
         auto new_result = current_reactor.simulate_to_equilibrium();
         long long new_score = new_result.melted_down ? -static_cast<long long>(new_result.max_temp) * 1000 : new_result.rf_per_tick;
 
-        // Calculate delta
+        // Calculate delta.
         double delta = static_cast<double>(new_score - current_score);
         bool accept = false;
 
-        // Stochastic Acceptance Logic
+        // Stochastic Acceptance Logic.
         if (delta > 0) {
-            accept = true; // Always accept improvements
+            accept = true; // Always accept improvements.
         } else {
-            // Explore worse layouts based on current temperature
+            // Explore worse layouts based on current temperature.
             double p = std::exp(delta / temperature);
             if (dist_prob(rng) < p) {
                 accept = true;
@@ -109,20 +111,17 @@ ReactorState<> optimize_layout(int width, int height, int seed, bool show_progre
 
         if (accept) {
             current_score = new_score;
-            // Did we find a new global maximum?
             if (current_score > best_score) {
                 best_score = current_score;
-                best_reactor = current_reactor; // C++ default assignment operator memcopies the state arrays
+                best_reactor = current_reactor;
             }
         } else {
-            // Rollback the mutation (Zero Allocation!)
             current_reactor.set_block(mx, my, old_block);
         }
 
-        // Cool the system
         temperature *= cooling_rate;
 
-        // Terminal Progress Bar (Proxy Thread Only)
+        // Terminal Progress Bar (Proxy Thread Only).
         if (show_progress && (i % update_interval == 0 || i == max_iterations - 1)) {
             int percentage = (i * 100) / max_iterations;
             int bar_width = 50;
@@ -153,11 +152,11 @@ void test_layout() {
     //     "2A21A"
     // };
     std::vector<std::string> test_layout = {
-        "P222V",
-        "2AV2V",
-        "R21A4",
-        "2A22A",
-        "V4V12"
+        "V4A2V",
+        "2A214",
+        "211VV",
+        "V2A4V",
+        "V22A2"
     };
 
     size_t width = test_layout[0].size();
@@ -212,24 +211,126 @@ void print_layout(ReactorState<>& reactor, int width, int height) {
     }
 }
 
+void export_building_gadgets(ReactorState<>& reactor, int width, int height, const std::string& filename) {
+    std::map<std::string, int> counts;
+    std::string statelist = "";
+    
+    // Add +2 to X and Z to accommodate the outer encasing walls. Y is exactly 3 layers tall.
+    int x_size = width + 2;
+    int z_size = height + 2;
+    int y_size = 3;
+
+    bool first_block = true;
+    
+    auto add_block = [&](int id, const std::string& name) {
+        if (!first_block) { statelist += ","; }
+        statelist += std::to_string(id);
+        first_block = false;
+        if (!name.empty() && name != "minecraft:air") {
+            counts[name]++;
+        }
+    };
+
+    // Iterate how Building Gadgets parses volumetric data: Z (outer) -> Y (middle) -> X (inner).
+    for (int z = 0; z < z_size; ++z) {
+        for (int y = 0; y < y_size; ++y) {
+            for (int x = 0; x < x_size; ++x) {
+                // Edge logic applies to the X and Z axes for the casing.
+                bool is_edge_xz = (x == 0 || x == x_size - 1 || z == 0 || z == z_size - 1);
+
+                if (y == 0) {
+                    // LAYER 0 (Floor): Completely solid reactor wall.
+                    add_block(1, "oritech:reactor_wall");
+                } 
+                else if (y == 1) {
+                    // LAYER 1 (Core): Edges are walls, inner blocks are the optimized layout.
+                    if (is_edge_xz) {
+                        add_block(1, "oritech:reactor_wall");
+                    } else {
+                        BlockType block = reactor.get_block(x - 1, z - 1);
+                        switch (block) {
+                            case BlockType::SingleRod: add_block(2, "oritech:reactor_rod"); break;
+                            case BlockType::DoubleRod: add_block(3, "oritech:reactor_double_rod"); break;
+                            case BlockType::QuadRod:   add_block(4, "oritech:reactor_quad_rod"); break;
+                            case BlockType::Reflector: 
+                            case BlockType::Absorber:  add_block(5, "oritech:reactor_condenser"); break;
+                            case BlockType::HeatPipe:  add_block(6, "oritech:reactor_heat_pipe"); break;
+                            case BlockType::HeatVent:  add_block(7, "oritech:reactor_vent"); break;
+                            case BlockType::Empty:
+                            default: add_block(0, "minecraft:air"); break;
+                        }
+                    }
+                } 
+                else if (y == 2) {
+                    // LAYER 2 (Roof): Edges are walls, inner blocks map ports to their required core components.
+                    if (is_edge_xz) {
+                        add_block(1, "oritech:reactor_wall");
+                    } else {
+                        BlockType block = reactor.get_block(x - 1, z - 1);
+                        if (block == BlockType::SingleRod || block == BlockType::DoubleRod || block == BlockType::QuadRod) {
+                            add_block(9, "oritech:reactor_fuel_port");
+                        } else if (block == BlockType::Reflector || block == BlockType::Absorber) {
+                            add_block(8, "oritech:reactor_absorber_port");
+                        } else {
+                            add_block(1, "oritech:reactor_wall");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    std::ofstream out(filename);
+    out << "{\n";
+    out << "  \"name\": \"Optimized Reactor " << width << "x" << height << "\",\n";
+    
+    // SNBT Palette array mapping IDs 0-9 to their precise NBT properties.
+    std::string palette = "{Name:\\\"minecraft:air\\\"},"
+                          "{Name:\\\"oritech:reactor_wall\\\"},"
+                          "{Name:\\\"oritech:reactor_rod\\\",Properties:{lit:\\\"false\\\"}},"
+                          "{Name:\\\"oritech:reactor_double_rod\\\",Properties:{lit:\\\"false\\\"}},"
+                          "{Name:\\\"oritech:reactor_quad_rod\\\",Properties:{lit:\\\"false\\\"}},"
+                          "{Name:\\\"oritech:reactor_condenser\\\"},"
+                          "{Name:\\\"oritech:reactor_heat_pipe\\\"},"
+                          "{Name:\\\"oritech:reactor_vent\\\"},"
+                          "{Name:\\\"oritech:reactor_absorber_port\\\"},"
+                          "{Name:\\\"oritech:reactor_fuel_port\\\"}";
+    
+    // Write the 3D bounding box dimensions and flat integer state list.
+    out << "  \"statePosArrayList\": \"{blockstatemap:[" << palette << "],endpos:{X:" << (x_size - 1) << ",Y:" << (y_size - 1) << ",Z:" << (z_size - 1) << "},startpos:{X:0,Y:0,Z:0},statelist:[I;" << statelist << "]}\",\n";
+    
+    // Write required materials block with correct unicode formatting.
+    out << "  \"requiredItems\": {\n";
+    bool first_item = true;
+    for (const auto& pair : counts) {
+        if (!first_item) out << ",\n";
+        out << "    \"oritech:Reference{ResourceKey[minecraft:item / " << pair.first << "]\\u003d" << pair.first << "}\": " << pair.second;
+        first_item = false;
+    }
+    out << "\n  }\n";
+    out << "}\n";
+    out.close();
+}
+
 int main() {
+    // test_layout();
+    // return 0;
     int width = 5;
     int height = 5;
-    int num_threads = 16; // Leaves a few threads free so your PC stays responsive
+    int num_threads = 8;
 
     auto start_time = std::chrono::high_resolution_clock::now();
     
     std::cout << "Launching " << num_threads << " parallel optimization threads..." << std::endl;
 
-    // Launch multiple independent Simulated Annealing runs
+    // Launch multiple independent Simulated Annealing runs.
     std::vector<std::future<ReactorState<>>> futures;
     for (int i = 0; i < num_threads; ++i) {
-        // Pass 'i' as the seed, and true only for thread 0
         bool is_proxy_thread = (i == 0);
-        futures.push_back(std::async(std::launch::async, optimize_layout, width, height, 1337 + i, is_proxy_thread));
+        futures.push_back(std::async(std::launch::async, optimize_layout, width, height, 9481 + i, is_proxy_thread));
     }
 
-    // Collect the results and find the absolute best layout
+    // Collect the results and find the absolute best layout.
     ReactorState<> absolute_best_reactor(width, height);
     long long global_best_rf = -1;
     SimResult global_best_stats;
@@ -253,6 +354,11 @@ int main() {
     std::cout << "Final Peak Temp:    " << global_best_stats.max_temp << " C" << std::endl;
     std::cout << "\n--- Reactor Layout ---" << std::endl;
     print_layout(absolute_best_reactor, width, height);
-    // test_layout();
+
+    // Generate the Building Gadgets blueprint.
+    std::string filename = "schematics/optimized_reactor_" + std::to_string(width) + "x" + std::to_string(height) + ".json";
+    export_building_gadgets(absolute_best_reactor, width, height, filename);
+    std::cout << "\nSchematic exported to: " << filename << std::endl;
+
     return 0;
 }
