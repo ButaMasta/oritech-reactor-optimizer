@@ -22,6 +22,14 @@ struct ReactorConfig {
     int absorber_cooling = 16; 
 };
 
+struct SimResult {
+        long long rf_per_tick;
+        int max_temp;
+        bool melted_down;
+        bool stabilized;
+        int ticks_ran;
+};
+
 template <size_t MAX_W = 62, size_t MAX_H = 62>
 class ReactorState {
 private:
@@ -84,16 +92,12 @@ public:
         return (x >= 0 && x < active_width && y >=0 && y < active_height);
     }
 
-    struct SimResult {
-        long long rf_per_tick;
-        int max_temp;
-        bool melted_down;
-        bool stabilized;
-        int ticks_ran;
-    };
-
     SimResult simulate_to_equilibrium() {
         long long rf_per_tick = 0;
+
+        for (auto& row : heat_map) {
+            row.fill(0);
+        }
 
         // Precompute the internal/external pulses and heat generation of the grid.
         std::array<std::array<int, MAX_W>, MAX_H> heat_gen_per_tick;
@@ -156,14 +160,24 @@ public:
         int max_temp = 0;
         int ticks = 0;
 
-        while (!stabilized && ticks < 1000) {
+        while (!stabilized && ticks < 1500) {
             max_temp = 0;
+            int intra_tick_max = 0;
 
             // Add heat.
             for (int y = 0; y < active_height; y++) {
                 for (int x = 0; x < active_width; x++) {                    
                     heat_map[y][x] += heat_gen_per_tick[y][x];
+
+                    if (heat_map[y][x] > intra_tick_max) {
+                        intra_tick_max = heat_map[y][x];
+                    }
                 }
+            }
+
+            // Instantly fail if any component ever passes meltdown temp.
+            if (intra_tick_max > config.meltdown_temp) {
+                return {rf_per_tick, intra_tick_max, true, false, ticks};
             }
 
             // Component interactions.
@@ -233,10 +247,10 @@ public:
                                     hy = ny;
                                 }
 
-                                if (max_neighbor_heat != 0 && hx != -1) {
-                                    int removed = std::min(max_neighbor_heat / config.vent_divisor + config.vent_base, max_neighbor_heat);
-                                    heat_map[hy][hx] -= removed;
-                                }
+                            }
+                            if (max_neighbor_heat != 0 && hx != -1) {
+                                int removed = std::min(max_neighbor_heat / config.vent_divisor + config.vent_base, max_neighbor_heat);
+                                heat_map[hy][hx] -= removed;
                             }
                             break;
                         }
@@ -280,6 +294,11 @@ public:
             
             max_temp = curr_max_temp;
             ticks++;
+        }
+
+        // If it has not stabilized by the time we hit max ticks then assume it will meltdown.
+        if (!stabilized) {
+            return {rf_per_tick, max_temp, true, stabilized, ticks};
         }
 
         return {rf_per_tick, max_temp, false, stabilized, ticks};
