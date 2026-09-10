@@ -1,5 +1,6 @@
 #include <array>
 #include <algorithm>
+#include <cstdint>
 
 enum class BlockType {
     Empty,
@@ -14,7 +15,7 @@ enum class BlockType {
 
 struct ReactorConfig {
     int rf_per_pulse = 9600;
-    int meltdown_temp = 3000;
+    int meltdown_temp = 4000;
     int vent_divisor = 100;
     int vent_base = 4;
     int pipe_divisor = 4;
@@ -23,26 +24,27 @@ struct ReactorConfig {
 };
 
 struct SimResult {
-        long long rf_per_tick;
-        int max_temp;
-        bool melted_down;
-        bool stabilized;
-        int ticks_ran;
+    long long rf_per_tick;
+    int max_temp;
+    bool melted_down;
+    bool stabilized;
+    int ticks_ran;
 };
 
-template <size_t MAX_W = 62, size_t MAX_H = 62>
+template <size_t W, size_t H, ReactorConfig Config = ReactorConfig{}>
 class ReactorState {
 private:
-    // Runtime bounding box for testing designs.
-    int active_width;
-    int active_height;
-    ReactorConfig config;
+    static constexpr size_t GRID_SIZE = W * H;
 
-    // Max size static arrays to work in.
-    std::array<std::array<BlockType, MAX_W>, MAX_H> grid;
-    std::array<std::array<int, MAX_W>, MAX_H> heat_map;
+    // 1D Arrays sized with W and H.
+    std::array<BlockType, GRID_SIZE> grid;
+    std::array<int, GRID_SIZE> heat_map;
 
-    // Helper functions for pulse mechanics.
+    // Helper to convert 2D coordinates to 1D flat index.
+    inline constexpr int get_flat_idx(int x, int y) const {
+        return y * W + x;
+    }
+
     inline constexpr bool is_rod(BlockType type) const {
         return type == BlockType::SingleRod || 
                type == BlockType::DoubleRod || 
@@ -68,110 +70,95 @@ private:
     }
 
 public:
-    // Initialize with requested bounds.
-    ReactorState(int w, int h, const ReactorConfig& cfg = ReactorConfig{}) 
-        : active_width(w), active_height(h), config(cfg) {
-        // Clear grids.
-        for (auto& row : grid) {
-            row.fill(BlockType::Empty);
-        }
-        for (auto& row : heat_map) {
-            row.fill(0);
-        }
+    ReactorState() {
+        grid.fill(BlockType::Empty);
+        heat_map.fill(0);
     }
 
-    inline BlockType get_block(int x, int y) {
-        return grid[y][x];
+    inline BlockType get_block(int x, int y) const {
+        return grid[get_flat_idx(x, y)];
     }
 
     inline void set_block(int x, int y, BlockType type) {
-        grid[y][x] = type;
+        grid[get_flat_idx(x, y)] = type;
     }
 
     inline bool is_valid_coordinate(int x, int y) const {
-        return (x >= 0 && x < active_width && y >=0 && y < active_height);
+        return (x >= 0 && x < static_cast<int>(W) && y >= 0 && y < static_cast<int>(H));
     }
 
     SimResult simulate_to_equilibrium() {
         long long rf_per_tick = 0;
-
-        for (auto& row : heat_map) {
-            row.fill(0);
-        }
+        heat_map.fill(0);
 
         constexpr std::array<std::pair<int, int>, 4> directions = {{{0, -1}, {0, 1}, {-1, 0}, {1, 0}}};
 
-        // Precompute Adjacency Lists.
-        struct Coord { int x, y; };
-        
-        struct GeneratorData { int x, y, heat_gen; };
-        GeneratorData generators[MAX_W * MAX_H];
+        struct GeneratorData { int flat_idx, heat_gen; };
+        GeneratorData generators[GRID_SIZE];
         int num_generators = 0;
 
         struct ComponentData { 
-            int x, y; 
-            Coord neighbors[4]; 
+            int flat_idx; 
+            int neighbor_indices[4]; 
             int num_neighbors; 
         };
-        ComponentData absorbers[MAX_W * MAX_H];
+        ComponentData absorbers[GRID_SIZE];
         int num_absorbers = 0;
-        ComponentData pipes[MAX_W * MAX_H];
+        ComponentData pipes[GRID_SIZE];
         int num_pipes = 0;
-        ComponentData vents[MAX_W * MAX_H];
+        ComponentData vents[GRID_SIZE];
         int num_vents = 0;
         
-        Coord heat_holders[MAX_W * MAX_H]; 
+        int heat_holders[GRID_SIZE]; 
         int num_heat_holders = 0;
 
         long long total_heat_generated = 0;
 
-        // Precomputation.
-        for (int y = 0; y < active_height; y++) {
-            for (int x = 0; x < active_width; x++) {
-                BlockType curr_block = get_block(x, y);
+        // Precomputation (Using 2D purely for logic, but storing 1D).
+        for (int y = 0; y < static_cast<int>(H); y++) {
+            for (int x = 0; x < static_cast<int>(W); x++) {
+                int flat_idx = get_flat_idx(x, y);
+                BlockType curr_block = grid[flat_idx];
 
                 if (curr_block == BlockType::Empty || curr_block == BlockType::Reflector) {
-                    continue; // Skip non-active static blocks entirely.
+                    continue; 
                 }
 
                 if (is_rod(curr_block) || curr_block == BlockType::HeatPipe) {
-                    heat_holders[num_heat_holders++] = {x, y};
+                    heat_holders[num_heat_holders++] = flat_idx;
                 }
 
-                // Gather valid, non-empty neighbors for this specific coordinate.
-                Coord valid_neighbors[4];
+                // Gather flat indices of valid neighbors.
+                int valid_neighbors[4];
                 int n_count = 0;
                 for (const auto& dir : directions) {
                     int nx = x + dir.first;
                     int ny = y + dir.second;
                     if (is_valid_coordinate(nx, ny) && get_block(nx, ny) != BlockType::Empty) {
-                        valid_neighbors[n_count++] = {nx, ny};
+                        valid_neighbors[n_count++] = get_flat_idx(nx, ny);
                     }
                 }
 
-                // Catalog active cooling components with their neighbors.
                 if (curr_block == BlockType::Absorber) {
-                    absorbers[num_absorbers] = {x, y, {}, n_count};
-                    std::copy(valid_neighbors, valid_neighbors + n_count, absorbers[num_absorbers].neighbors);
+                    absorbers[num_absorbers] = {flat_idx, {}, n_count};
+                    std::copy(valid_neighbors, valid_neighbors + n_count, absorbers[num_absorbers].neighbor_indices);
                     num_absorbers++;
                 }
                 else if (curr_block == BlockType::HeatPipe) {
-                    pipes[num_pipes] = {x, y, {}, n_count};
-                    std::copy(valid_neighbors, valid_neighbors + n_count, pipes[num_pipes].neighbors);
+                    pipes[num_pipes] = {flat_idx, {}, n_count};
+                    std::copy(valid_neighbors, valid_neighbors + n_count, pipes[num_pipes].neighbor_indices);
                     num_pipes++;
                 }
                 else if (curr_block == BlockType::HeatVent) {
-                    vents[num_vents] = {x, y, {}, n_count};
-                    std::copy(valid_neighbors, valid_neighbors + n_count, vents[num_vents].neighbors);
+                    vents[num_vents] = {flat_idx, {}, n_count};
+                    std::copy(valid_neighbors, valid_neighbors + n_count, vents[num_vents].neighbor_indices);
                     num_vents++;
                 }
                 
-                // Catalog generators and calculate pulses.
                 if (is_rod(curr_block)) {
                     int total_pulses = get_internal_pulses(curr_block);
                     int curr_outbound = get_outbound_pulses(curr_block);
 
-                    // Rod pulse logic.
                     for (const auto& dir : directions) {
                         int nx = x + dir.first;
                         int ny = y + dir.second;
@@ -185,26 +172,24 @@ public:
                         }
                     }
 
-                    rf_per_tick += total_pulses * config.rf_per_pulse;
+                    rf_per_tick += total_pulses * Config.rf_per_pulse;
 
                     int heat_gen = (total_pulses / 2) * total_pulses + 4;
                     if (heat_gen > 0) {
-                        generators[num_generators++] = {x, y, heat_gen}; 
+                        generators[num_generators++] = {flat_idx, heat_gen}; 
                         total_heat_generated += heat_gen;
                     }
                 }
             }
         }
 
-        // If the layout generates more heat than the absolute max theoretical cooling capacity, fail.
-        int max_vent_cooling = (config.meltdown_temp / config.vent_divisor) + config.vent_base;
-        long long max_theoretical_cooling = (num_absorbers * config.absorber_cooling * 4) + (num_vents * max_vent_cooling);
+        int max_vent_cooling = (Config.meltdown_temp / Config.vent_divisor) + Config.vent_base;
+        long long max_theoretical_cooling = (num_absorbers * Config.absorber_cooling * 4) + (num_vents * max_vent_cooling);
 
         if (total_heat_generated > max_theoretical_cooling) {
-            return {rf_per_tick, config.meltdown_temp + 1, true, false, 0};
+            return {rf_per_tick, Config.meltdown_temp + 1, true, false, 0};
         }
 
-        // Track state history to help identify a stable state.
         constexpr int HISTORY_SIZE = 32;
         struct StateSnapshot {
             long long total_heat = -1;
@@ -222,84 +207,73 @@ public:
             max_temp = 0;
             int intra_tick_max = 0;
             
-            // Add heat.
             for (int i = 0; i < num_generators; i++) {
-                int x = generators[i].x;
-                int y = generators[i].y;
-                heat_map[y][x] += generators[i].heat_gen;
+                int f_idx = generators[i].flat_idx;
+                heat_map[f_idx] += generators[i].heat_gen;
 
-                if (heat_map[y][x] > intra_tick_max) {
-                    intra_tick_max = heat_map[y][x];
+                if (heat_map[f_idx] > intra_tick_max) {
+                    intra_tick_max = heat_map[f_idx];
                 }
             }
 
-            if (intra_tick_max > config.meltdown_temp) {
+            if (intra_tick_max > Config.meltdown_temp) {
                 return {rf_per_tick, intra_tick_max, true, false, ticks};
             }
-
-            // Tick all active heat moving or removing blocks in the reactor. 
-            // Ordering is to assume worst case scenario for cooling since Oritech 
-            // uses non-deterministic Iterators over HashMaps.
 
             // Absorbers.
             for (int i = 0; i < num_absorbers; i++) {
                 for (int n = 0; n < absorbers[i].num_neighbors; n++) {
-                    int nx = absorbers[i].neighbors[n].x;
-                    int ny = absorbers[i].neighbors[n].y;
-                    if (heat_map[ny][nx] > 0) {
-                        heat_map[ny][nx] -= config.absorber_cooling;
-                    }
+                    int n_idx = absorbers[i].neighbor_indices[n];
+                    heat_map[n_idx] = std::max(0, heat_map[n_idx] - Config.absorber_cooling);
                 }
             }
 
             // Heat Pipes.
             for (int i = 0; i < num_pipes; i++) {
-                int curr_heat = heat_map[pipes[i].y][pipes[i].x];
+                int p_idx = pipes[i].flat_idx;
+                int curr_heat = heat_map[p_idx];
+                
                 for (int n = 0; n < pipes[i].num_neighbors; n++) {
-                    int nx = pipes[i].neighbors[n].x;
-                    int ny = pipes[i].neighbors[n].y;
-                    int neighbor_heat = heat_map[ny][nx];
+                    int n_idx = pipes[i].neighbor_indices[n];
+                    int neighbor_heat = heat_map[n_idx];
                     
                     if (neighbor_heat > curr_heat) {
                         int diff = neighbor_heat - curr_heat;
-                        int gained = std::min(diff / config.pipe_divisor + config.pipe_base, diff);
-                        heat_map[ny][nx] -= gained;
+                        int gained = std::min(diff / Config.pipe_divisor + Config.pipe_base, diff);
+                        heat_map[n_idx] -= gained;
                         curr_heat += gained;
                     }
                 }
-                heat_map[pipes[i].y][pipes[i].x] = curr_heat;
+                heat_map[p_idx] = curr_heat;
             }
 
-            // Heat Vents.
+            // Heat vents.
             for (int i = 0; i < num_vents; i++) {
                 int max_neighbor_heat = 0;
-                int hx = -1, hy = -1;
+                int target_idx = -1;
+                
                 for (int n = 0; n < vents[i].num_neighbors; n++) {
-                    int nx = vents[i].neighbors[n].x;
-                    int ny = vents[i].neighbors[n].y;
-                    int neighbor_heat = heat_map[ny][nx];
+                    int n_idx = vents[i].neighbor_indices[n];
+                    int neighbor_heat = heat_map[n_idx];
                     
                     if (neighbor_heat > max_neighbor_heat) {
                         max_neighbor_heat = neighbor_heat;
-                        hx = nx;
-                        hy = ny;
+                        target_idx = n_idx;
                     }
                 }
-                if (hx != -1) {
-                    int removed = std::min(max_neighbor_heat / config.vent_divisor + config.vent_base, max_neighbor_heat);
-                    heat_map[hy][hx] -= removed;
+                if (target_idx != -1) {
+                    int removed = std::min(max_neighbor_heat / Config.vent_divisor + Config.vent_base, max_neighbor_heat);
+                    heat_map[target_idx] -= removed;
                 }
             }
 
-            // Calculate Totals and the state hash.
             int curr_max_temp = 0;
             long long curr_total_heat = 0;
             unsigned int curr_hash = 0;
             
             for (int i = 0; i < num_heat_holders; i++) {
-                int x = heat_holders[i].x;
-                int y = heat_holders[i].y;
-                int local_heat = heat_map[y][x];
+                int h_idx = heat_holders[i];
+                int local_heat = heat_map[h_idx];
 
                 curr_total_heat += local_heat;
                 if (local_heat > curr_max_temp) {
@@ -309,11 +283,10 @@ public:
                 curr_hash ^= (static_cast<unsigned int>(local_heat) + i) * 2654435761u;
             }
 
-            if (curr_max_temp > config.meltdown_temp) {
+            if (curr_max_temp > Config.meltdown_temp) {
                 return {rf_per_tick, curr_max_temp, true, stabilized, ticks};
             }
 
-            // Cycle detection.
             for (int i = 0; i < HISTORY_SIZE; i++) {
                 if (history[i].total_heat == curr_total_heat && 
                     history[i].max_temp == curr_max_temp && 
@@ -323,18 +296,13 @@ public:
                 }
             }
 
-            // Record current state to history buffer.
             history[history_idx] = {curr_total_heat, curr_max_temp, curr_hash};
-            history_idx = (history_idx + 1) % HISTORY_SIZE;
+            history_idx = (history_idx + 1) & (HISTORY_SIZE - 1);
             
             max_temp = curr_max_temp;
             ticks++;
         }
 
-        if (!stabilized) {
-            return {rf_per_tick, max_temp, true, stabilized, ticks};
-        }
-
-        return {rf_per_tick, max_temp, false, stabilized, ticks};
+        return {rf_per_tick, max_temp, !stabilized, stabilized, ticks};
     }
 };
