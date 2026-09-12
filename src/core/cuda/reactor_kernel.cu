@@ -1,3 +1,4 @@
+#include "reactor_kernel.cuh"
 #include <cuda_runtime.h>
 #include <stdint.h>
 
@@ -7,25 +8,13 @@ enum class BlockType : uint8_t {
     Reflector, HeatPipe, HeatVent, Absorber
 };
 
-// Config struct passed by value (copied to constant memory automatically)
-struct KernelConfig {
-    int rf_per_pulse;
-    int meltdown_temp;
-    int vent_divisor;
-    int vent_base;
-    int pipe_divisor;
-    int pipe_base;
-    int absorber_cooling; 
-};
-
 template <size_t W, size_t H>
 __device__ void simulate_single_reactor(
     const uint8_t* local_grid, 
     const KernelConfig config,
     long long& out_rf, 
     int& out_temp, 
-    bool& out_melted) 
-{
+    bool& out_melted) {
     constexpr int GRID_SIZE = W * H;
     int heat_map[GRID_SIZE];
     for(int i=0; i<GRID_SIZE; i++) heat_map[i] = 0;
@@ -255,13 +244,12 @@ __device__ void simulate_single_reactor(
 // 3. The Global Dispatch Kernel
 template <size_t W, size_t H>
 __global__ void evaluate_reactor_batch_kernel(
-    const uint8_t* grids,      // [batch_size, W*H]
+    const uint8_t* grids,
     const KernelConfig config,
     const int batch_size,
-    long long* out_rf,         // [batch_size]
-    int* out_temp,             // [batch_size]
-    bool* out_melted)          // [batch_size]
-{
+    long long* out_rf,
+    int* out_temp,
+    bool* out_melted) {
     // Find our unique thread ID in the massive batch
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     
@@ -286,23 +274,34 @@ __global__ void evaluate_reactor_batch_kernel(
 
 // 4. The LibTorch C++ Wrapper
 // This function acts as the bridge between your standard C++ vectors and the CUDA kernel.
+template <size_t W, size_t H>
 void launch_gpu_batch_eval(
     const uint8_t* d_grids, 
     int batch_size, 
     KernelConfig config,
     long long* d_out_rf, 
     int* d_out_temp, 
-    bool* d_out_melted) 
-{
+    bool* d_out_melted) {
     // Standard block sizes for modern NVIDIA architectures
     int threads_per_block = 256;
     int num_blocks = (batch_size + threads_per_block - 1) / threads_per_block;
 
-    // Assumes a 4x4 grid. You can template this wrapper or branch it for 3x3, 4x4, 5x5
-    evaluate_reactor_batch_kernel<5, 5><<<num_blocks, threads_per_block>>>(
+    evaluate_reactor_batch_kernel<W, H><<<num_blocks, threads_per_block>>>(
         d_grids, config, batch_size, d_out_rf, d_out_temp, d_out_melted
     );
 
     // Wait for all 100,000 threads to finish simulating before letting C++ continue
     cudaDeviceSynchronize(); 
 }
+
+template void launch_gpu_batch_eval<3, 3>(
+    const uint8_t*, int, KernelConfig, long long*, int*, bool*
+);
+
+template void launch_gpu_batch_eval<4, 4>(
+    const uint8_t*, int, KernelConfig, long long*, int*, bool*
+);
+
+template void launch_gpu_batch_eval<5, 5>(
+    const uint8_t*, int, KernelConfig, long long*, int*, bool*
+);
