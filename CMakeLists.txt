@@ -19,7 +19,13 @@ find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 # Define your source files (update with your actual file names)
-add_executable(reactor_optimizer src/main.cpp src/core/cuda/reactor_kernel.cu)
+add_executable(reactor_optimizer 
+    src/main.cpp 
+    src/core/cuda/reactor_kernel.cu
+    src/rl/actor_critic.cpp
+    src/rl/reactor_gym.cpp
+    src/rl/rollout_buffer.cpp
+)
 
 target_include_directories(reactor_optimizer PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

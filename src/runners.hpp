@@ -11,6 +11,9 @@
 #include "core/batch_manager.hpp"
 #include "traditional/branch_and_bound.hpp"
 #include "traditional/simulated_annealing.hpp"
+#include "rl/actor_critic.hpp"
+#include "rl/reactor_gym.hpp"
+#include "rl/rollout_buffer.hpp"
 
 namespace reactor_optimizer::runners {
 
@@ -89,6 +92,49 @@ ReactorState<W, H, Config> run_simulated_annealing(std::span<const BlockType> al
     std::cout << "Max Optimized RF/t: " << global_best_rf << "\n" << std::endl;
 
     return absolute_best_reactor;
+}
+
+inline void run_ppo_collection(int num_envs = 1000, int num_steps = 25) {
+    std::cout << "Initializing PPO environment..." << std::endl;
+
+    // 1. Initialize the Neural Network
+    rl::ActorCritic model;
+    
+    // 2. Initialize the parallel environment manager
+    rl::VectorEnvManager env_manager(num_envs);
+    
+    // 3. Initialize the rollout buffer
+    rl::RolloutBuffer buffer(num_steps, num_envs);
+
+    std::cout << "Starting rollout collection..." << std::endl;
+
+    // Reset all environments to get the initial blank states
+    torch::Tensor obs = env_manager.reset_all();
+
+    // Play the game to fill the buffer
+    for (int step = 0; step < num_steps; ++step) {
+        torch::NoGradGuard no_grad;
+
+        rl::ActorCriticOutput out = model->forward(obs);
+
+        torch::Tensor probs = torch::softmax(out.action_logits, /*dim=*/-1);
+        torch::Tensor actions = torch::multinomial(probs, /*num_samples=*/1).squeeze(-1);
+        
+        torch::Tensor action_probs = probs.gather(/*dim=*/1, actions.unsqueeze(-1)).squeeze(-1);
+        torch::Tensor log_probs = torch::log(action_probs);
+
+        auto [next_obs, rewards, dones] = env_manager.step_all(actions);
+
+        buffer.insert(obs, actions, log_probs, out.state_value.squeeze(-1), rewards, dones);
+
+        obs = next_obs;
+    }
+
+    std::cout << "Rollout buffer successfully filled!" << std::endl;
+    std::cout << "Final Buffer States:" << std::endl;
+    std::cout << "- Observations Shape: " << buffer.observations.sizes() << std::endl;
+    std::cout << "- Actions Shape: " << buffer.actions.sizes() << std::endl;
+    std::cout << "- Rewards Shape: " << buffer.rewards.sizes() << std::endl;
 }
 
 } // namespace reactor_optimizer::runners

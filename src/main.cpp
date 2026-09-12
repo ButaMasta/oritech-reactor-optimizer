@@ -13,8 +13,8 @@
 using namespace reactor_optimizer::core;
 using namespace reactor_optimizer::runners;
 
-constexpr size_t OPTIMIZE_W = 4;
-constexpr size_t OPTIMIZE_H = 4;
+constexpr size_t OPTIMIZE_W = 5;
+constexpr size_t OPTIMIZE_H = 5;
 constexpr ReactorConfig OPTIMIZE_CONFIG{
     .rf_per_pulse = 9600,
     .meltdown_temp = 4000
@@ -183,17 +183,26 @@ int main() {
     std::cout.imbue(std::locale("en_US.UTF-8"));
 
     
-    enum class Mode { BranchAndBound, SimulatedAnnealing };
+    enum class Mode { BranchAndBound, SimulatedAnnealing, PPO };
     
     // Easily toggle between algorithms here
-    Mode current_mode = Mode::BranchAndBound; 
+    Mode current_mode = Mode::PPO; 
     
     ReactorState<OPTIMIZE_W, OPTIMIZE_H, OPTIMIZE_CONFIG> final_reactor;
 
-    if (current_mode == Mode::BranchAndBound) {
-        final_reactor = run_branch_and_bound<OPTIMIZE_W, OPTIMIZE_H, OPTIMIZE_CONFIG>(ALLOWED_BLOCKS);
-    } else {
-        final_reactor = run_simulated_annealing<OPTIMIZE_W, OPTIMIZE_H, OPTIMIZE_CONFIG>(ALLOWED_BLOCKS);
+    switch (current_mode) {
+        case Mode::BranchAndBound: {
+            final_reactor = run_branch_and_bound<OPTIMIZE_W, OPTIMIZE_H, OPTIMIZE_CONFIG>(ALLOWED_BLOCKS);
+            break;
+        }
+        case Mode::SimulatedAnnealing: {
+            final_reactor = run_simulated_annealing<OPTIMIZE_W, OPTIMIZE_H, OPTIMIZE_CONFIG>(ALLOWED_BLOCKS);
+            break;
+        }
+        case Mode::PPO: {
+            run_ppo_collection();
+            return 0;
+        }
     }
 
     std::cout << "--- Final Reactor Layout ---" << std::endl;
